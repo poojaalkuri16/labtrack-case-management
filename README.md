@@ -2,7 +2,7 @@
 
 **Case tracking for dental laboratories.** LabTrack helps a dental lab manage case progress, keep due dates consistent across time zones, and notify clinics when work is ready.
 
-> **Live demo:** [(https://labtrack-case-management.vercel.app/)(#deployment)](https://labtrack-case-management.vercel.app/)  
+> **Live demo:** https://labtrack-case-management.vercel.app/  
 > **Stack:** Next.js App Router, TypeScript, Tailwind CSS, libSQL (SQLite/Turso), Vitest
 
 ## Overview
