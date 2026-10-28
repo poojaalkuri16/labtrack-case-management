@@ -31,4 +31,4 @@ Here is where things stand ahead of Friday's demo. You can try everything yourse
 If you can send items 1 and 2 by Wednesday, I can switch on real emails and test with one friendly clinic before Friday.
 
 Best,
-[Your name]
+Pooja A
