@@ -57,125 +57,147 @@ The Due-date check page compares the old timezone-sensitive display with the cor
 
 ![LabTrack application architecture](docs/architecture.png)
 
-What happens when a case is marked ready
-Staff click Mark ready on the Cases page.
-The changeStatus server action runs on the server.
-lib/workflow.ts changes the status with a single atomic update (UPDATE … WHERE status != new) and records when the case became ready. If two requests arrive together, only the first changes anything.
-lib/notify.ts builds the email and claims a notification slot in the database before sending.
-In test mode the email is saved to the Outbox. With Resend configured, it is sent through Resend.
-The email contains a tracking link. The public tracking page uses an unguessable token and shows no patient details.
-Key design decisions
-1. A due date is a calendar date, not a timestamp
+### Request and data flow
 
-2026-11-14 means the same day for every clinic. Turning it into a UTC timestamp and displaying it in the visitor's timezone can shift it to the 13th for clinics west of Greenwich, which was the original bug.
+1. A staff member uses the Cases dashboard to create a case or advance its status.
+2. Next.js routes validate and process the action through the application workflow.
+3. `lib/workflow.ts` handles status transitions and records when a case becomes ready.
+4. `lib/db.ts` reads and writes case, clinic, and notification records in libSQL/SQLite.
+5. When a case becomes ready, `lib/notify.ts` builds the email and claims a notification slot before delivery.
+6. In test mode, the email is recorded in the Outbox. With Resend configured, the notification can be delivered through the provider.
+7. The email includes a tracking URL. The public tracking page uses an unguessable token and does not expose patient details.
+8. Vitest tests exercise date handling, notification idempotency, concurrency, delivery failures, late-case rules, and demo reset behavior.
 
-LabTrack keeps the due date as a YYYY-MM-DD string from the database to the screen. lib/dates.ts does all date maths on the year, month and day, and a database CHECK constraint rejects anything that isn't shaped like a date. Only "what is today?" needs a timezone, and that is always the lab's (LAB_TIMEZONE, default Europe/Berlin), never the viewer's.
+### Key design decisions
 
-2. The database prevents duplicate emails
+#### 1. A due date is a calendar date, not a timestamp
 
-The notifications table has a unique index on (case_id, kind, cycle), where cycle is the moment the case became ready. The code claims the slot with INSERT OR IGNORE before sending, so a double-click or a retry cannot produce a second email for the same ready moment. The status change itself is atomic, so two overlapping requests cannot start two cycles, and the email provider call carries an Idempotency-Key.
+A value such as `2026-11-14` represents the same calendar day for every clinic. Converting it to a UTC timestamp and then rendering it in a visitor's timezone can shift the displayed date by one day.
 
-If a case is reopened and marked ready again, that starts a new cycle and the clinic is told again, which is intended.
+LabTrack keeps due dates as `YYYY-MM-DD` strings from storage through display. `lib/dates.ts` contains the date handling, and the database validates the date shape with a `CHECK` constraint. "Today" and "overdue" are calculated using the lab's configured timezone (`LAB_TIMEZONE`, default `Europe/Berlin`).
 
-3. A failed email never blocks the lab
+#### 2. The database prevents duplicate notifications
 
-If sending fails, the case still becomes Ready, the failure appears in the Outbox, and staff can retry with one click. A clinic with no email address is flagged as a failure rather than skipped silently.
+The `notifications` table has a unique index on `(case_id, kind, cycle)`. The workflow claims the notification slot with `INSERT OR IGNORE` before sending. This protects against double-clicks and concurrent requests creating duplicate notifications for the same ready cycle.
 
-Technology
-Area	Technology
-Application	Next.js 15 (App Router), React 18
-Language	TypeScript
-Styling	Tailwind CSS
-Data	libSQL client: SQLite file locally, Turso when deployed
-Email	Outbox in test mode, Resend for live email
-Testing	Vitest
-Hosting	Vercel
-Project structure
-text
+If a case is reopened and later marked ready again, it starts a new cycle and may generate a new notification. The provider request also uses an `Idempotency-Key`.
+
+#### 3. Email delivery is failure-tolerant
+
+Test mode stores generated messages in the Outbox and sends nothing externally. With Resend configured, the same notification workflow can deliver email. Delivery failures and retries are handled in `lib/notify.ts`. For a high-volume production system, this synchronous request flow should be moved to a background queue.
+
+## Technology stack
+
+| Area | Technology |
+| --- | --- |
+| Application | Next.js App Router |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| Data layer | libSQL client; SQLite locally, Turso optionally |
+| Notifications | Outbox in test mode; Resend for live email |
+| Testing | Vitest |
+| Deployment | Vercel |
+
+## Project structure
+
+```text
 app/
-  page.tsx                 Cases dashboard
-  actions.ts               Server actions: change status, add case, retry email, demo reset
-  cases/new/page.tsx       New case form
-  outbox/page.tsx          Email log and retry
-  timezone/page.tsx        Due-date check (old bug vs. fix)
-  track/[token]/page.tsx   Public tracking page
-components/                Nav, status progress bar, banners
+  page.tsx                 # Cases dashboard
+  timezone/page.tsx        # Due-date timezone demonstration
+  outbox/page.tsx          # Generated email log and retry UI
+  ...                      # New-case, tracking, and workflow routes
 lib/
-  dates.ts                 Calendar-date maths and the lab's "today"
-  workflow.ts              Status changes (atomic) and ready timestamp
-  notify.ts                Email building, claim-then-send, delivery, retry
-  dashboard.ts             What counts as late and what is due on a day
-  cases.ts                 Queries
-  db.ts                    Schema, constraints, seed data, demo reset
-  types.ts                 Shared types
+  db.ts                    # Schema, constraints, and seed data
+  dates.ts                 # Calendar-date handling
+  workflow.ts              # Case status transitions
+  notify.ts                # Email composition, claiming, and delivery
 tests/
-  dates.test.ts            Dates identical across 12 timezones, DST and leap years
-  notify.test.ts           One email per ready moment, no patient data
-  concurrency.test.ts      Double-click under slow-database conditions
-  delivery.test.ts         Provider errors, retry, clinic without an email
-  dashboard.test.ts        Late-case rules
-  reset.test.ts            Demo reset
+  dates                   # Date and timezone behavior
+  notify                  # Notification workflow
+  concurrency             # Duplicate prevention under concurrency
+  delivery                # Delivery failures and retries
 docs/
-  1-TICKETS.md             Tickets, acceptance criteria and questions for the client
-  2-CLIENT-UPDATE-EMAIL.md Plain-English update to the client
-  TESTING.md               Test strategy and manual checklist
-  *.png                    Screenshots and architecture diagram
-Getting started
-Requirements
-Node.js 20 or newer, and npm
-Run locally
-bash
+  homepage.png
+  architecture.png
+  new-case.png
+  mark-ready.png
+  outbox.png
+  tracking-page.png
+  due-date-check.png
+```
+
+## Getting started
+
+### Requirements
+
+- Node.js and npm
+- A terminal in the project directory
+
+### Install and run locally
+
+```bash
 npm install
 npm run dev
+```
 
-Open http://localhost:3000. No configuration is needed: a local database is created and filled with sample data on first start.
+Open [http://localhost:3000](http://localhost:3000). The local database is created and seeded for the demo.
 
-Test and build
-bash
-npm test             # 31 tests
+### Run tests and build
+
+```bash
+npm test
 npm run typecheck
 npm run build
+```
 
-The tests cover dates in twelve timezones, one email per ready moment, double-clicks under a slow database, email failures and retries, late-case rules and the demo reset. See docs/TESTING.md for the strategy and a manual checklist.
+The test suite covers timezone/date invariance, calendar calculations, notification idempotency, concurrency, delivery failures, late-case rules, and demo reset behavior.
 
-Configuration
+## Configuration
 
-Everything is optional. Without any variables the app runs locally in test mode.
+The demo works without external service credentials. Optional environment variables enable persistent database hosting and live email.
 
-Variable	Purpose
-LAB_TIMEZONE	The lab's IANA timezone, used for "today" and "overdue". Default Europe/Berlin.
-TURSO_DATABASE_URL	Turso database URL for persistent hosted data.
-TURSO_AUTH_TOKEN	Token for the Turso database.
-RESEND_API_KEY	Turns on live email through Resend. Leave unset to stay in test mode.
-NOTIFY_FROM	Verified sender address for Resend.
-NOTIFY_MODE	Set to test to force test mode even when a Resend key is present.
-NEXT_PUBLIC_APP_URL	Public site URL used for tracking links in emails.
-DEMO_RESET	Set to off to hide the Reset demo data control.
+| Variable | Purpose |
+| --- | --- |
+| `LAB_TIMEZONE` | Lab timezone used to determine "today" and overdue cases. Defaults to `Europe/Berlin`. |
+| `TURSO_DATABASE_URL` | Turso/libSQL database URL for persistent hosted data. |
+| `TURSO_AUTH_TOKEN` | Authentication token for the Turso database. |
+| `RESEND_API_KEY` | Enables live email delivery through Resend. |
+| `NOTIFY_FROM` | Verified sender address used by Resend. |
 
-See .env.example for the format. Never commit real keys.
+See `.env.example` for the environment variable names and expected format. Keep secrets out of source control.
 
-Deployment
-Push the project to a GitHub repository and import it into Vercel.
-Create a free Turso database and set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in the Vercel project settings. Without them each serverless instance keeps its own temporary database, so data can seem to disappear between requests.
-Optional: set RESEND_API_KEY and NOTIFY_FROM (a verified sender) for live email.
-Optional: set LAB_TIMEZONE to the lab's confirmed timezone.
-For anything other than a demo, set DEMO_RESET=off.
-Security and privacy
-Emails contain the case reference and work type only, never a patient name or patient reference.
-Tracking links use unguessable tokens. Treat them as private links: anyone who has one can open that case's status page.
-There is no staff login in this version. A real deployment needs authentication for staff pages and actions.
-Keep database credentials and email keys in environment variables, never in source control.
-Known limitations and next steps
-Emails are sent during the request. At higher volume this should be a background queue with automatic retries.
-A notification left in "Sending" because the server stopped mid-request has no retry button yet.
-There is no screen for editing a due date on an existing case.
-LAB_TIMEZONE is a single lab-wide setting that the lab still needs to confirm.
-WhatsApp is not built. It needs a verified WhatsApp Business account and pre-approved message templates.
-If historical due dates were already shifted, existing records need a one-off audit and correction.
-How I used AI
+## Deployment
+
+A demo deployment can run on Vercel without external credentials. In that configuration, the database uses a temporary local fallback and may be reseeded after a cold start; it is intended for demonstration rather than persistent production data.
+
+For a more persistent deployment:
+
+1. Push the project to a GitHub repository and import it into Vercel.
+2. Create a free Turso database and set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in the Vercel project settings. Without them each serverless instance keeps its own temporary database, so data can seem to disappear between requests.
+3. Optional: set RESEND_API_KEY and NOTIFY_FROM (a verified sender) for live email.
+4. Optional: set LAB_TIMEZONE to the lab's confirmed timezone.
+5. For anything other than a demo, set DEMO_RESET=off.
+
+## Security and privacy notes
+
+- Emails contain the case reference and work type only, never a patient name or patient reference.
+- Tracking links use unguessable tokens. Treat them as private links: anyone who has one can open that case's status page.
+- There is no staff login in this version. A real deployment needs authentication for staff pages and actions.
+- Keep database credentials and email keys in environment variables, never in source control.
+
+## Known limitations and next steps
+
+- Emails are sent during the request. At higher volume this should be a background queue with automatic retries.
+- A notification left in "Sending" because the server stopped mid-request has no retry button yet.
+- There is no screen for editing a due date on an existing case.
+- LAB_TIMEZONE is a single lab-wide setting that the lab still needs to confirm.
+- WhatsApp is not built. It needs a verified WhatsApp Business account and pre-approved message templates.
+- If historical due dates were already shifted, existing records need a one-off audit and correction.
+
+## AI tool usage
 
 I used AI tools throughout this project and checked what they produced.
 
-Claude (Anthropic): drafted the initial project structure, date library, tests and written documents. In a later review it found and helped me fix a rare duplicate-email bug under overlapping requests and a database start-up failure that was cached. It also helped add the past-due flag, the demo reset, extra tests and the architecture diagram.
-Cursor: used to run the app, fix errors and apply changes.
-What I did myself: ran the tests, type check and production build on my machine, tested the pages in the browser under different timezones, resolved the dependency versions, deployed the app, took the screenshots, and wrote the client email and the walkthrough video.elopment accurately and specifically. Do not claim that a tool was used unless it was part of the actual workflow.
+- **Claude (Anthropic):** drafted the initial project structure, date library, tests and written documents. In a later review it found and helped me fix a rare duplicate-email bug under overlapping requests and a database start-up failure that was cached. It also helped add the past-due flag, the demo reset, extra tests and the architecture diagram.
+- **Cursor:** used to run the app, fix errors and apply changes.
+- **What I did myself:** ran the tests, type check and production build on my machine, tested the pages in the browser under different timezones, resolved the dependency versions, deployed the app, took the screenshots, and wrote the client email and the walkthrough video.
